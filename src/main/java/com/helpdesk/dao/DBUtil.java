@@ -8,6 +8,7 @@ import org.slf4j.LoggerFactory;
 import java.io.BufferedReader;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
 import java.sql.ResultSet;
@@ -39,15 +40,84 @@ public class DBUtil {
             logger.warn("Could not load db.properties, using embedded defaults", e);
         }
 
-        // Check environment variables first
+        // Check environment variables
         String envDbUrl = System.getenv("JDBC_DATABASE_URL");
-        if (envDbUrl == null || envDbUrl.isEmpty()) {
-            envDbUrl = System.getenv("MYSQL_URL");
-        }
-        if (envDbUrl == null || envDbUrl.isEmpty()) {
-            envDbUrl = System.getenv("DATABASE_URL");
+        if (envDbUrl == null || envDbUrl.isEmpty()) envDbUrl = System.getenv("DATABASE_URL");
+        if (envDbUrl == null || envDbUrl.isEmpty()) envDbUrl = System.getenv("POSTGRES_URL");
+        if (envDbUrl == null || envDbUrl.isEmpty()) envDbUrl = System.getenv("MYSQL_URL");
+
+        // 1. Check if PostgreSQL is configured (e.g. Render Managed Postgres)
+        boolean isPostgres = false;
+        if (envDbUrl != null && !envDbUrl.isEmpty()) {
+            if (envDbUrl.startsWith("postgres://") || envDbUrl.startsWith("postgresql://") || envDbUrl.startsWith("jdbc:postgresql:")) {
+                isPostgres = true;
+            }
+        } else if (System.getenv("PGHOST") != null) {
+            isPostgres = true;
         }
 
+        if (isPostgres) {
+            try {
+                logger.info("Configuring PostgreSQL database connection...");
+                String pgJdbcUrl = null;
+                String pgUser = System.getenv("PGUSER");
+                String pgPass = System.getenv("PGPASSWORD");
+
+                if (envDbUrl != null && !envDbUrl.isEmpty()) {
+                    if (envDbUrl.startsWith("postgres://") || envDbUrl.startsWith("postgresql://")) {
+                        URI uri = new URI(envDbUrl);
+                        String host = uri.getHost();
+                        int port = uri.getPort() > 0 ? uri.getPort() : 5432;
+                        String path = uri.getPath() != null ? uri.getPath() : "/helpdesk_db";
+                        if (path.startsWith("/")) path = path.substring(1);
+
+                        String userInfo = uri.getUserInfo();
+                        if (userInfo != null && userInfo.contains(":")) {
+                            String[] parts = userInfo.split(":", 2);
+                            pgUser = parts[0];
+                            pgPass = parts[1];
+                        }
+
+                        pgJdbcUrl = "jdbc:postgresql://" + host + ":" + port + "/" + path;
+                        if (uri.getQuery() != null && !uri.getQuery().isEmpty()) {
+                            pgJdbcUrl += "?" + uri.getQuery();
+                        } else {
+                            pgJdbcUrl += "?sslmode=require";
+                        }
+                    } else if (envDbUrl.startsWith("jdbc:postgresql:")) {
+                        pgJdbcUrl = envDbUrl;
+                    }
+                } else {
+                    String host = System.getenv("PGHOST");
+                    String port = System.getenv("PGPORT") != null ? System.getenv("PGPORT") : "5432";
+                    String db = System.getenv("PGDATABASE") != null ? System.getenv("PGDATABASE") : "helpdesk_db";
+                    pgJdbcUrl = "jdbc:postgresql://" + host + ":" + port + "/" + db + "?sslmode=require";
+                }
+
+                HikariConfig pgConfig = new HikariConfig();
+                pgConfig.setDriverClassName("org.postgresql.Driver");
+                pgConfig.setJdbcUrl(pgJdbcUrl);
+                if (pgUser != null && !pgUser.isEmpty()) pgConfig.setUsername(pgUser);
+                if (pgPass != null) pgConfig.setPassword(pgPass);
+                pgConfig.setMaximumPoolSize(10);
+                pgConfig.setConnectionTimeout(5000);
+                pgConfig.setInitializationFailTimeout(5000);
+
+                HikariDataSource ds = new HikariDataSource(pgConfig);
+                try (Connection conn = ds.getConnection()) {
+                    dataSource = ds;
+                    isFallbackMode = false;
+                    activeDatabase = "PostgreSQL (Render / Cloud Engine)";
+                    logger.info("Successfully connected to PostgreSQL database!");
+                    initializeSchemaAndSeed(conn, "POSTGRES");
+                    return;
+                }
+            } catch (Exception e) {
+                logger.warn("PostgreSQL connection could not be established ({}), checking alternatives...", e.getMessage());
+            }
+        }
+
+        // 2. Check if MySQL is configured
         String envUser = System.getenv("MYSQL_USER");
         if (envUser == null || envUser.isEmpty()) envUser = System.getenv("DB_USER");
         if (envUser == null || envUser.isEmpty()) envUser = System.getenv("MYSQLUSER");
@@ -67,10 +137,10 @@ public class DBUtil {
         String resolvedUser = props.getProperty("db.mysql.user", "root");
         String resolvedPass = props.getProperty("db.mysql.password", "root");
 
-        if (envDbUrl != null && !envDbUrl.isEmpty()) {
+        if (envDbUrl != null && !envDbUrl.isEmpty() && (envDbUrl.startsWith("mysql://") || envDbUrl.startsWith("jdbc:mysql:"))) {
             if (envDbUrl.startsWith("mysql://")) {
                 try {
-                    java.net.URI uri = new java.net.URI(envDbUrl);
+                    URI uri = new URI(envDbUrl);
                     String host = uri.getHost();
                     int p = uri.getPort() > 0 ? uri.getPort() : 3306;
                     String path = uri.getPath() != null ? uri.getPath() : "/helpdesk_db";
@@ -83,11 +153,8 @@ public class DBUtil {
                     }
                     resolvedJdbcUrl = "jdbc:mysql://" + host + ":" + p + "/" + path + "?createDatabaseIfNotExist=true&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC";
                 } catch (Exception e) {
-                    logger.warn("Could not parse mysql:// URL, using raw with jdbc: prefix", e);
                     resolvedJdbcUrl = "jdbc:" + envDbUrl;
                 }
-            } else if (!envDbUrl.startsWith("jdbc:")) {
-                resolvedJdbcUrl = "jdbc:" + envDbUrl;
             } else {
                 resolvedJdbcUrl = envDbUrl;
             }
@@ -100,10 +167,7 @@ public class DBUtil {
         if (envUser != null && !envUser.isEmpty()) resolvedUser = envUser;
         if (envPass != null) resolvedPass = envPass;
 
-        // Try MySQL first if configured
         String dbType = props.getProperty("db.type", "auto");
-        boolean triedMysql = false;
-
         if ("mysql".equalsIgnoreCase(dbType) || "auto".equalsIgnoreCase(dbType)) {
             try {
                 logger.info("Attempting to connect to MySQL database at {}...", resolvedJdbcUrl.replaceAll(":[^:@]+@", ":****@"));
@@ -117,22 +181,20 @@ public class DBUtil {
                 mysqlConfig.setInitializationFailTimeout(3000);
 
                 HikariDataSource ds = new HikariDataSource(mysqlConfig);
-                // Test connection
                 try (Connection conn = ds.getConnection()) {
                     dataSource = ds;
                     isFallbackMode = false;
                     activeDatabase = "MySQL 8.0 (Production Engine)";
                     logger.info("Successfully connected to MySQL database!");
-                    initializeSchemaAndSeed(conn, false);
+                    initializeSchemaAndSeed(conn, "MYSQL");
                     return;
                 }
             } catch (Exception e) {
-                triedMysql = true;
-                logger.warn("MySQL connection could not be established ({}), falling back to embedded MySQL-mode database.", e.getMessage());
+                logger.warn("MySQL connection could not be established ({}), falling back to embedded database.", e.getMessage());
             }
         }
 
-        // Fallback to Embedded H2 in MySQL mode
+        // 3. Fallback to Embedded H2 in MySQL mode
         try {
             logger.info("Initializing embedded MySQL-compatible database...");
             HikariConfig h2Config = new HikariConfig();
@@ -146,7 +208,7 @@ public class DBUtil {
             isFallbackMode = true;
             activeDatabase = "Embedded H2 (MySQL 8.0 Compatibility Mode)";
             try (Connection conn = dataSource.getConnection()) {
-                initializeSchemaAndSeed(conn, true);
+                initializeSchemaAndSeed(conn, "H2");
             }
             logger.info("Embedded database successfully initialized and seeded!");
         } catch (Exception e) {
@@ -155,12 +217,11 @@ public class DBUtil {
         }
     }
 
-    private static void initializeSchemaAndSeed(Connection conn, boolean isH2) {
+    private static void initializeSchemaAndSeed(Connection conn, String dbEngine) {
         try {
-            // Check if users table exists
             boolean tablesExist = false;
             try (Statement st = conn.createStatement();
-                 ResultSet rs = st.executeQuery("SELECT count(*) FROM users")) {
+                 ResultSet rs = st.executeQuery("SELECT 1 FROM users LIMIT 1")) {
                 if (rs.next()) {
                     tablesExist = true;
                 }
@@ -169,17 +230,32 @@ public class DBUtil {
             }
 
             if (!tablesExist) {
-                logger.info("Running schema DDL...");
-                executeSqlScript(conn, "schema.sql", isH2);
-                logger.info("Populating initial seed data...");
-                executeSqlScript(conn, "seed.sql", isH2);
+                logger.info("Running schema DDL for engine: {}...", dbEngine);
+                executeSqlScript(conn, "schema.sql", dbEngine);
+                logger.info("Populating initial seed data for engine: {}...", dbEngine);
+                executeSqlScript(conn, "seed.sql", dbEngine);
+
+                if ("POSTGRES".equalsIgnoreCase(dbEngine)) {
+                    syncPostgresSequences(conn);
+                }
             }
         } catch (Exception e) {
             logger.error("Error during schema/seed initialization: {}", e.getMessage(), e);
         }
     }
 
-    private static void executeSqlScript(Connection conn, String scriptName, boolean isH2) {
+    private static void syncPostgresSequences(Connection conn) {
+        String[] tables = {"users", "assets", "maintenance_logs", "tickets", "escalation_logs", "kb_articles"};
+        for (String table : tables) {
+            try (Statement st = conn.createStatement()) {
+                st.execute("SELECT setval(pg_get_serial_sequence('" + table + "', 'id'), COALESCE((SELECT MAX(id) FROM " + table + "), 1))");
+            } catch (SQLException e) {
+                logger.debug("Sequence sync note for {}: {}", table, e.getMessage());
+            }
+        }
+    }
+
+    private static void executeSqlScript(Connection conn, String scriptName, String dbEngine) {
         try (InputStream in = DBUtil.class.getClassLoader().getResourceAsStream(scriptName)) {
             if (in == null) {
                 logger.warn("SQL script not found: {}", scriptName);
@@ -195,11 +271,22 @@ public class DBUtil {
                     if (line.startsWith("--") || line.isEmpty()) {
                         continue;
                     }
-                    // For MySQL syntax compatibility if running in pure MySQL vs H2
-                    if (!isH2 && line.contains("DATEADD('HOUR'")) {
-                        line = line.replace("DATEADD('HOUR',", "DATE_ADD(CURRENT_TIMESTAMP, INTERVAL ")
-                                   .replace(", CURRENT_TIMESTAMP)", " HOUR)");
+
+                    if ("POSTGRES".equalsIgnoreCase(dbEngine)) {
+                        // Adapt syntax for PostgreSQL
+                        line = line.replace("INT AUTO_INCREMENT PRIMARY KEY", "SERIAL PRIMARY KEY")
+                                   .replace("AUTO_INCREMENT PRIMARY KEY", "SERIAL PRIMARY KEY")
+                                   .replace("AUTO_INCREMENT", "SERIAL");
+                        line = line.replaceAll("(?i)DATEADD\\s*\\(\\s*'HOUR'\\s*,\\s*(-?\\d+)\\s*,\\s*CURRENT_TIMESTAMP\\s*\\)", "(CURRENT_TIMESTAMP + INTERVAL '$1 HOUR')");
+                        line = line.replaceAll("(?i)DATEADD\\s*\\(\\s*'MINUTE'\\s*,\\s*(-?\\d+)\\s*,\\s*CURRENT_TIMESTAMP\\s*\\)", "(CURRENT_TIMESTAMP + INTERVAL '$1 MINUTE')");
+                        line = line.replaceAll("(?i)DATEADD\\s*\\(\\s*'DAY'\\s*,\\s*(-?\\d+)\\s*,\\s*CURRENT_TIMESTAMP\\s*\\)", "(CURRENT_TIMESTAMP + INTERVAL '$1 DAY')");
+                    } else if ("MYSQL".equalsIgnoreCase(dbEngine)) {
+                        // Adapt syntax for MySQL
+                        line = line.replaceAll("(?i)DATEADD\\s*\\(\\s*'HOUR'\\s*,\\s*(-?\\d+)\\s*,\\s*CURRENT_TIMESTAMP\\s*\\)", "DATE_ADD(CURRENT_TIMESTAMP, INTERVAL $1 HOUR)");
+                        line = line.replaceAll("(?i)DATEADD\\s*\\(\\s*'MINUTE'\\s*,\\s*(-?\\d+)\\s*,\\s*CURRENT_TIMESTAMP\\s*\\)", "DATE_ADD(CURRENT_TIMESTAMP, INTERVAL $1 MINUTE)");
+                        line = line.replaceAll("(?i)DATEADD\\s*\\(\\s*'DAY'\\s*,\\s*(-?\\d+)\\s*,\\s*CURRENT_TIMESTAMP\\s*\\)", "DATE_ADD(CURRENT_TIMESTAMP, INTERVAL $1 DAY)");
                     }
+
                     sql.append(line).append(" ");
                     if (line.endsWith(";")) {
                         String stmtStr = sql.toString();
@@ -208,7 +295,7 @@ public class DBUtil {
                             try {
                                 statement.execute(stmtStr);
                             } catch (SQLException e) {
-                                logger.debug("Statement execution note: {} -> {}", stmtStr, e.getMessage());
+                                logger.debug("Statement note: {} -> {}", stmtStr, e.getMessage());
                             }
                         }
                         sql.setLength(0);

@@ -62,6 +62,13 @@
             <version>8.3.0</version>
         </dependency>
 
+        <!-- PostgreSQL JDBC Driver (for Render Managed PostgreSQL & Cloud DBs) -->
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <version>42.7.3</version>
+        </dependency>
+
         <!-- HikariCP Connection Pool -->
         <dependency>
             <groupId>com.zaxxer</groupId>
