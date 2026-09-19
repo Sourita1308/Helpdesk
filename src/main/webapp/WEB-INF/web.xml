@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<web-app xmlns="https://jakarta.ee/xml/ns/jakartaee"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="https://jakarta.ee/xml/ns/jakartaee https://jakarta.ee/xml/ns/jakartaee/web-app_5_0.xsd"
+         version="5.0">
+
+    <display-name>HelpDesk Lite</display-name>
+
+    <servlet>
+        <servlet-name>DashboardServlet</servlet-name>
+        <servlet-class>com.helpdesk.servlet.DashboardServlet</servlet-class>
+    </servlet>
+    <servlet-mapping>
+        <servlet-name>DashboardServlet</servlet-name>
+        <url-pattern>/dashboard</url-pattern>
+    </servlet-mapping>
+
+    <servlet>
+        <servlet-name>TicketServlet</servlet-name>
+        <servlet-class>com.helpdesk.servlet.TicketServlet</servlet-class>
+    </servlet>
+    <servlet-mapping>
+        <servlet-name>TicketServlet</servlet-name>
+        <url-pattern>/tickets</url-pattern>
+        <url-pattern>/tickets/new</url-pattern>
+        <url-pattern>/tickets/view</url-pattern>
+        <url-pattern>/tickets/update</url-pattern>
+        <url-pattern>/tickets/assign</url-pattern>
+    </servlet-mapping>
+
+    <servlet>
+        <servlet-name>AssetServlet</servlet-name>
+        <servlet-class>com.helpdesk.servlet.AssetServlet</servlet-class>
+    </servlet>
+    <servlet-mapping>
+        <servlet-name>AssetServlet</servlet-name>
+        <url-pattern>/assets</url-pattern>
+        <url-pattern>/assets/view</url-pattern>
+        <url-pattern>/assets/new</url-pattern>
+        <url-pattern>/assets/maintenance</url-pattern>
+        <url-pattern>/assets/repeat-issues</url-pattern>
+    </servlet-mapping>
+
+    <servlet>
+        <servlet-name>EscalationServlet</servlet-name>
+        <servlet-class>com.helpdesk.servlet.EscalationServlet</servlet-class>
+    </servlet>
+    <servlet-mapping>
+        <servlet-name>EscalationServlet</servlet-name>
+        <url-pattern>/escalate</url-pattern>
+        <url-pattern>/escalate/run-rules</url-pattern>
+    </servlet-mapping>
+
+    <servlet>
+        <servlet-name>KbServlet</servlet-name>
+        <servlet-class>com.helpdesk.servlet.KbServlet</servlet-class>
+    </servlet>
+    <servlet-mapping>
+        <servlet-name>KbServlet</servlet-name>
+        <url-pattern>/kb</url-pattern>
+        <url-pattern>/kb/view</url-pattern>
+        <url-pattern>/kb/new</url-pattern>
+        <url-pattern>/kb/convert</url-pattern>
+    </servlet-mapping>
+
+    <jsp-config>
+        <taglib>
+            <taglib-uri>http://java.sun.com/jsp/jstl/core</taglib-uri>
+            <taglib-location>/WEB-INF/tld/c.tld</taglib-location>
+        </taglib>
+        <taglib>
+            <taglib-uri>http://java.sun.com/jsp/jstl/fmt</taglib-uri>
+            <taglib-location>/WEB-INF/tld/fmt.tld</taglib-location>
+        </taglib>
+    </jsp-config>
+
+</web-app>

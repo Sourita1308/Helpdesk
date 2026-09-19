@@ -1,0 +1,8 @@
+target/
+.git/
+.gitignore
+*.bat
+.mvn/
+.maven/
+tomcat.*
+*.log
